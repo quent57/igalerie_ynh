@@ -1,3 +1,1 @@
-Place the sources of the webapp in this folder.
-
-This file can be removed.
+Sources are downloads from iGalerie website, see scripts/install.

@@ -3,6 +3,13 @@
 # Exit on command errors and treat unset variables as an error
 set -eu
 
+# Conf
+version=2.4.2
+
+# 
+tmp_dir=$(mktemp -d)
+
+
 # This is a multi-instance app, meaning it can be installed several times independently
 # The id of the app as stated in the manifest is available as $YNH_APP_ID
 # The instance number is available as $YNH_APP_INSTANCE_NUMBER (equals "1", "2", ...)
@@ -20,7 +27,10 @@ domain=$YNH_APP_ARG_DOMAIN
 path=$YNH_APP_ARG_PATH
 admin=$YNH_APP_ARG_ADMIN
 is_public=$YNH_APP_ARG_IS_PUBLIC
-language=$YNH_APP_ARG_LANGUAGE
+login=$YNH_APP_ARG_LOGIN
+igalerie_name=$YNH_APP_ARG_IGALERIE_NAME
+email=$YNH_APP_ARG_EMAIL
+password=$YNH_APP_ARG_PASSWORD
 
 # Source YunoHost helpers
 source /usr/share/yunohost/helpers
@@ -28,35 +38,49 @@ source /usr/share/yunohost/helpers
 # Save app settings
 ynh_app_setting_set "$app" admin "$admin"
 ynh_app_setting_set "$app" is_public "$is_public"
-ynh_app_setting_set "$app" language "$language"
+ynh_app_setting_set "$app" login "$login"
+ynh_app_setting_set "$app" igalerie_name "$igalerie_name"
+ynh_app_setting_set "$app" email "$email"
+ynh_app_setting_set "$app" password "$password"
 
 # Check domain/path availability
 sudo yunohost app checkurl "${domain}${path}" -a "$app" \
     || ynh_die "Path not available: ${domain}${path}"
 
+# Create multimedia directories
+wget https://github.com/maniackcrudelis/yunohost.multimedia/archive/master.zip
+unzip master.zip
+sudo ./yunohost.multimedia-master/script/ynh_media_build.sh
+
 # Copy source files
 src_path=/var/www/$app
 sudo mkdir -p $src_path
-sudo cp -a ../sources/. $src_path
+sudo wget http://www.igalerie.org/igalerie-${version}.zip -O $tmp_dir/igalerie.zip
+sudo unzip $tmp_dir/igalerie.zip -d $src_path/
+sudo mv $src_path/igalerie/* $src_path
+sudo rmdir $src_path/igalerie
+sudo rm $tmp_dir/igalerie.zip
 
 # Set permissions to app files
 # you may need to make some file and/or directory writeable by www-data (nginx user)
 sudo chown -R root: $src_path
+# To know wich folder write here, execute none of them, begin igalerie install with web interface.
+# The installation process warn about those dirs are not writable.
+sudo chown -R www-data: $src_path/albums
+sudo chown -R www-data: $src_path/cache/*
+sudo chown -R www-data: $src_path/config
+sudo chown -R www-data: $src_path/errors
+sudo chown -R www-data: $src_path/users/*
 
-### MySQL (can be removed if not used) ###
-# If your app use a MySQL database you can use these lines to bootstrap
-# a database, an associated user and save the password in app settings.
+### MySQL ###
+# Bootstrap a database, an associated user and save the password in app settings.
 #
 # # Generate MySQL password and create database
-# dbuser=$app
-# dbname=$app
-# dbpass=$(ynh_string_random 12)
-# ynh_app_setting_set "$app" mysqlpwd "$dbpass"
-# ynh_mysql_create_db "$dbname" "$dbuser" "$dbpass"
-#
-# # Load initial SQL into the new database
-# ynh_mysql_connect_as "$dbuser" "$dbpass" "$dbname" \
-#     < "../sources/sql/mysql.init.sql"
+dbuser=$app
+dbname=$app
+dbpass=$(ynh_string_random 12)
+ynh_app_setting_set "$app" mysqlpwd "$dbpass"
+ynh_mysql_create_db "$dbname" "$dbuser" "$dbpass"
 ### MySQL end ###
 
 # Modify Nginx configuration file and copy it to Nginx conf directory
@@ -82,11 +106,101 @@ sudo cp $nginx_conf /etc/nginx/conf.d/$domain.d/$app.conf
 # sudo service php5-fpm reload
 ### PHP end ###
 
+
+### Postinstall on web interface ###
+
+curl_check(){
+    local out=$(curl -L -b $tmp_dir/cookies.txt -c $tmp_dir/cookies.txt -w "\n%{http_code}" -k "$@")
+    local status="${out##*$'\n'}"
+    local http_content="${out%$'\n'*}"
+    echo "$http_content"
+    if [[ "$status" != "200" ]]; then
+        ynh_die "Http request return an error status : $status"
+        exit -1
+    fi
+}
+
+igalerie_curl_check(){
+    local msg="$1"
+    local url="$2"
+    shift;shift
+    local out=$(curl_check "$url" "$@")
+    local error_flags='install_error\|"report"' #\|icon_error'
+    # echo "$out" # for debug
+    echo "$out" | grep "$error_flags" \
+        && (ynh_die "Error on $msg ($url) : $(echo "$out" | grep "$error_flags" -A 2 | sed 's/<[^>]\+>/ /g')" ; exit -1) \
+        || echo "$msg OK"
+    return $?
+}
+
+
+# Add alias line in hosts file
+# echo "127.0.0.1 $domain # $app" | sudo tee -a /etc/hosts
+
+
+# temporary set public accessible for installation curls
+# unprotected_uris allows SSO credentials to be passed anyway.
+ynh_app_setting_set $app unprotected_uris "/install"
+
+# Reload services
+sudo service nginx reload
+sudo yunohost app ssowatconf
+sleep 1
+
+
+# Étape 1 : vérification système
+url_step1="https://$domain$path/install/?q=step/1"
+igalerie_curl_check "Step 1 : iGalerie System Check" "$url_step1"
+
+
+# Étape 2 : informations MySQL
+url_step2="https://$domain$path/install/?q=step/2"
+igalerie_curl_check "Step 2 : iGalerie DBMS (database) config" "$url_step2" \
+    --data-urlencode 'server=localhost'\
+    --data-urlencode "user=$dbuser"\
+    --data-urlencode "password=$dbpass"\
+    --data-urlencode "database=$dbname"\
+    --data-urlencode 'prefix=' 
+
+# Étape 3 : informations galerie.
+# Language : there are only one language supported.
+# Timezone, other timezones are supporteds. TODO
+url_step3="https://$domain$path/install/?q=step/3"
+# set -o xtrace ?
+# URL fixme : set to https.
+# see if (!preg_match('`^http://.+/.+\..+$`i', $_POST['url'])) in install.php
+igalerie_curl_check "Step 3 : iGalerie general config" "$url_step3" \
+    --data-urlencode "login=$login"\
+    --data-urlencode "password=$password"\
+    --data-urlencode "password_confirm=$password"\
+    --data-urlencode "email=$email"\
+    --data-urlencode "title=$igalerie_name"\
+    --data-urlencode "url=http://$domain$path/index.php"\
+    --data-urlencode "lang_default=fr_FR"\
+    --data-urlencode "tz_default=Europe/Paris"
+
+# Remove alias line from hosts file
+# sudo sed -i "/# $app/d" /etc/hosts
+
+# Define album dir TODO give the choice at installation time
+album_dir=/home/yunohost.multimedia/$admin/Picture/iGalerie
+sudo mkdir -p "$album_dir"
+sudo sed -i $src_path/config/conf.php -e "s@define('CONF_ALBUMS_DIR', '.*');@define('CONF_ALBUMS_DIR', '$album_dir');@"
+sudo sed -i $src_path/config/conf.php -e "s@define('CONF_URL_REWRITE', .*);@define('CONF_URL_REWRITE', 1);@"
+
+# Clean up
+#sudo rm -r $src_path/install
+sudo rm -r $src_path/upgrade.php
+sudo rm $tmp_dir/cookies.txt || echo "$tmp_dir/cookies.txt dosn't exist"
+sudo rmdir $tmp_dir
+
+
 # If app is public, add url to SSOWat conf as skipped_uris
 if [[ $is_public -eq 1 ]]; then
   # unprotected_uris allows SSO credentials to be passed anyway.
   ynh_app_setting_set "$app" unprotected_uris "/"
+  ynh_app_setting_set "$app" protected_uris "/admin"
+else
+  ynh_app_setting_set "$app" protected_uris "/"
 fi
 
-# Reload services
-sudo service nginx reload

@@ -13,13 +13,13 @@ source /usr/share/yunohost/helpers
 # Note: the last argument is where to save this path, see the restore script.
 ynh_backup "/var/www/${app}" "sources"
 
-### MySQL (remove if not used) ###
+### MySQL ###
 # If a MySQL database is used:
 # # Dump the database
-# dbname=$app
-# dbuser=$app
-# dbpass=$(ynh_app_setting_get "$app" mysqlpwd)
-# mysqldump -u "$dbuser" -p"$dbpass" --no-create-db "$dbname" > ./dump.sql
+dbname=$app
+dbuser=$app
+dbpass=$(ynh_app_setting_get "$app" mysqlpwd)
+mysqldump -u "$dbuser" -p"$dbpass" --no-create-db "$dbname" > ./dump.sql
 ### MySQL end ###
 
 # Copy NGINX configuration
